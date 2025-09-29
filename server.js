@@ -364,6 +364,24 @@ app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), async (re
   res.send(twiml.toString());
 });
 
+// --- Webhook para llamadas de voz ---
+app.post("/voice", (req, res) => {
+  const twiml = new twilio.twiml.VoiceResponse();
+
+  // 🔹 Saludo inicial
+  twiml.say({ voice: "alice", language: "es-ES" }, "Hola, soy tu asistente inteligente. Decime algo y te respondo.");
+
+  // 🔹 Graba la voz y la manda a /process_voice
+  twiml.record({
+    action: "/process_voice",
+    transcribe: true,
+    maxLength: 10,
+    playBeep: true
+  });
+
+  res.type("text/xml");
+  res.send(twiml.toString());
+});
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
