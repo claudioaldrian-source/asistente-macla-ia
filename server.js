@@ -329,8 +329,8 @@ setInterval(() => {
   if (due.length) saveDB();
 }, 5000);
 
-// --- Webhook para WhatsApp ---
-app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), (req, res) => {
+// --- Webhook para WhatsApp con OpenAI ---
+app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), async (req, res) => {
   const MessagingResponse = twilio.twiml.MessagingResponse;
   const twiml = new MessagingResponse();
 
@@ -338,12 +338,32 @@ app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), (req, res
 
   console.log("📩 WhatsApp dice:", userMessage);
 
-  // Respuesta simple de prueba
-  twiml.message(`👋 Hola! Recibí tu mensaje: "${userMessage}"`);
+  try {
+    // 🔹 Pedimos respuesta a OpenAI
+    const aiResponse = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "Sos un asistente conversacional argentino, amable, cercano y natural." },
+        { role: "user", content: userMessage }
+      ],
+      max_tokens: 150,
+      temperature: 0.9
+    });
+
+    const reply = aiResponse.choices[0].message.content;
+
+    // 🔹 Enviamos la respuesta a WhatsApp
+    twiml.message(reply);
+
+  } catch (error) {
+    console.error("❌ Error en WhatsApp webhook:", error);
+    twiml.message("⚠️ Lo siento, tuve un problema procesando tu mensaje.");
+  }
 
   res.type("text/xml");
   res.send(twiml.toString());
 });
+
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
