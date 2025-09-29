@@ -13,6 +13,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
+    "googleapis": "^160.0.0",
     "openai": "^5.23.1",
     "socket.io": "^4.8.1",
     "twilio": "^5.10.1",

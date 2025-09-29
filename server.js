@@ -8,7 +8,44 @@ const fs = require("fs");
 const path = require("path");
 const twilio = require("twilio");
 const { v4: uuidv4 } = require("uuid"); // para nombres únicos de archivos
+const { google } = require("googleapis");
 
+// --- GOOGLE OAUTH CLIENT ---
+function getOAuth2Client() {
+  const {
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI,
+    GOOGLE_REFRESH_TOKEN
+  } = process.env;
+
+  const oAuth2Client = new google.auth.OAuth2(
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI
+  );
+  oAuth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
+  return oAuth2Client;
+}
+
+// --- CALENDAR HELPERS ---
+async function createCalendarEvent({ summary, description, startISO, endISO, attendeesEmails = [] }) {
+  const auth = getOAuth2Client();
+  const calendar = google.calendar({ version: "v3", auth });
+
+  const event = {
+    summary: summary || "Evento",
+    description: description || "",
+    start: { dateTime: startISO },
+    end:   { dateTime: endISO },
+    attendees: attendeesEmails.map(email => ({ email })),
+    reminders: { useDefault: true }
+  };
+
+  const calendarId = process.env.GOOGLE_CALENDAR_ID || "primary";
+  const res = await calendar.events.insert({ calendarId, requestBody: event });
+  return res.data;
+}
 
 // --- PERSISTENCIA LIGERA (JSON) ---
 const DB_PATH = path.join(__dirname, 'memory.json');
@@ -105,52 +142,6 @@ app.post("/process_voice", express.urlencoded({ extended: false }), async (req, 
   res.send(twiml.toString());
 });
 
-app.post("/process_voice", express.urlencoded({ extended: false }), async (req, res) => {
-  const userText = req.body.TranscriptionText || "No entendí bien.";
-
-  // 1. Generamos respuesta con OpenAI
-  const aiResponse = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      { role: "system", content: "Sos un asistente amable y natural. Respondé breve porque es una llamada de voz." },
-      { role: "user", content: userText }
-    ],
-    max_tokens: 80,
-    temperature: 0.8
-  });
-  const reply = aiResponse.choices[0].message.content;
-
-  // 2. Generamos audio con OpenAI TTS
-  const mp3 = await openai.audio.speech.create({
-    model: "gpt-4o-mini-tts",
-    voice: "alloy", // podés probar verse, etc.
-    input: reply
-  });
-
-  const buffer = Buffer.from(await mp3.arrayBuffer());
-  const filename = `${uuidv4()}.mp3`;
-  const filepath = path.join(__dirname, "public", "tts", filename);
-
-  // Guardamos archivo para que Twilio lo pueda reproducir
-  fs.mkdirSync(path.join(__dirname, "public", "tts"), { recursive: true });
-  fs.writeFileSync(filepath, buffer);
-
-  // 3. Responder a Twilio con <Play> del archivo
-  const twiml = new twilio.twiml.VoiceResponse();
-  twiml.play(`${req.protocol}://${req.get("host")}/tts/${filename}`);
-
-  // volvemos a grabar para seguir conversando
-  twiml.record({
-    action: "/process_voice",
-    transcribe: true,
-    maxLength: 10,
-    playBeep: true
-  });
-
-  res.type("text/xml");
-  res.send(twiml.toString());
-});
-
 
 // --- Motor de conversación con memoria ---
 class ConversationEngine {
@@ -185,6 +176,44 @@ class ConversationEngine {
 }
 const conversationEngine = new ConversationEngine();
 
+// --- INTENT: decidir si es recordatorio local o evento de calendario ---
+async function classifyAndExtractIntent(userText) {
+  // La IA devuelve JSON estricto.
+  const sys = `Sos un parser. Tu única salida debe ser JSON válido sin explicación.
+Tipo de salida:
+{
+  "intent": "calendar_event" | "local_reminder" | "none",
+  "summary": "string",
+  "description": "string",
+  "startISO": "YYYY-MM-DDTHH:mm:ssZ | ''",
+  "endISO": "YYYY-MM-DDTHH:mm:ssZ | ''",
+  "attendees": ["correo@ej.com", "..."]
+}
+
+Reglas:
+- Si el usuario pide "agendar", "reunión", "turno", "cita", o da fecha/hora concreta -> intent = "calendar_event".
+- Si dice "recordame", "acordate", "guardame", sin fecha clara -> intent = "local_reminder".
+- Si hay fecha/hora clara pero dice "recordame", interpretá como calendar_event.
+- Cuando haya hora pero no duración, poné endISO = startISO + 60 minutos.
+- startISO/endISO en formato ISO UTC (si no podés inferir, dejá '').`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0,
+    messages: [
+      { role: "system", content: sys },
+      { role: "user", content: userText }
+    ],
+    max_tokens: 300
+  });
+
+  let data = { intent:"none", summary:"", description:"", startISO:"", endISO:"", attendees:[] };
+  try {
+    data = JSON.parse(completion.choices?.[0]?.message?.content || "{}");
+  } catch (_) {}
+  return data;
+}
+
 // --- WebSocket ---
 io.on('connection', (socket) => {
   console.log(`Cliente conectado: ${socket.id}`);
@@ -194,6 +223,54 @@ io.on('connection', (socket) => {
       const text = data.message.toLowerCase();
       const id = socket.data.identity || `anon-${socket.id}`;
       db.users[id] = db.users[id] || { prefs: {} };
+// --- IA decide si es calendario o recordatorio local ---
+const intent = await classifyAndExtractIntent(data.message);
+
+// 3.1) Si es EVENTO DE CALENDARIO
+if (intent.intent === "calendar_event" && intent.startISO) {
+  try {
+    const event = await createCalendarEvent({
+      summary: intent.summary || "Evento",
+      description: intent.description || `Creado por MACLA-IA`,
+      startISO: intent.startISO,
+      endISO: intent.endISO || new Date(Date.parse(intent.startISO) + 60*60*1000).toISOString(),
+      attendeesEmails: intent.attendees || []
+    });
+
+    socket.emit('message_response', {
+      message: `✅ Listo, agendé **${event.summary}** para el ${new Date(event.start.dateTime || event.start.date).toLocaleString()}.`,
+      timestamp: new Date()
+    });
+    return;
+  } catch (e) {
+    console.error("Calendar error:", e);
+    socket.emit('message_response', {
+      message: "⚠️ No pude crear el evento en Google Calendar. Probá con fecha y hora claras (ej: 'jueves 10:00').",
+      timestamp: new Date()
+    });
+    return;
+  }
+}
+
+// 3.2) Si es RECORDATORIO LOCAL (sin fecha clara)
+if (intent.intent === "local_reminder" && !intent.startISO) {
+  const id = socket.data.identity || `anon-${socket.id}`;
+  const r = {
+    id: `r_${Date.now()}`,
+    identity: id,
+    text: intent.summary || data.message,
+    dueAt: Date.now() + 30*60*1000, // por defecto 30min; luego podemos preguntar hora
+    done: false
+  };
+  db.reminders.push(r);
+  saveDB();
+
+  socket.emit('message_response', {
+    message: `📝 Listo, te lo guardé como recordatorio. Si querés hora exacta decime “recordame hoy a las 21 ...”.`,
+    timestamp: new Date()
+  });
+  return;
+}
 
       // 🚨 Detectar pedido de clima
       if (text.includes("clima") || text.includes("tiempo")) {
@@ -335,6 +412,50 @@ app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), async (re
   const twiml = new MessagingResponse();
 
   const userMessage = req.body.Body || "";
+
+try {
+  const intent = await classifyAndExtractIntent(userMessage);
+
+  if (intent.intent === "calendar_event" && intent.startISO) {
+    try {
+      const event = await createCalendarEvent({
+        summary: intent.summary || "Evento",
+        description: intent.description || `Creado por MACLA-IA`,
+        startISO: intent.startISO,
+        endISO: intent.endISO || new Date(Date.parse(intent.startISO) + 60*60*1000).toISOString(),
+        attendeesEmails: intent.attendees || []
+      });
+
+      twiml.message(`✅ Agendado: *${event.summary}* el ${new Date(event.start.dateTime || event.start.date).toLocaleString()}.`);
+      res.type("text/xml").send(twiml.toString());
+      return;
+    } catch (e) {
+      console.error("Calendar error (WA):", e);
+      twiml.message("⚠️ No pude crear el evento en Google Calendar. Probá con fecha y hora claras (ej: 'jueves 10:00').");
+      res.type("text/xml").send(twiml.toString());
+      return;
+    }
+  }
+
+  if (intent.intent === "local_reminder" && !intent.startISO) {
+    const from = req.body.From || "wa-user";
+    const r = {
+      id: `r_${Date.now()}`,
+      identity: from,
+      text: intent.summary || userMessage,
+      dueAt: Date.now() + 30*60*1000,
+      done: false
+    };
+    db.reminders.push(r);
+    saveDB();
+
+    twiml.message("📝 Listo, te lo guardé como recordatorio. Si querés hora exacta decime: 'recordame hoy a las 21 ...'.");
+    res.type("text/xml").send(twiml.toString());
+    return;
+  }
+} catch (e) {
+  console.error("Intent error (WA):", e);
+}
 
   console.log("📩 WhatsApp dice:", userMessage);
 
