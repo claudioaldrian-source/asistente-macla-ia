@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Asistente Conversacional MACLA IA con Voz Natural</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    #micBtn { transition: transform 0.2s ease; }
+    #micBtn.recording { transform: scale(1.2); background: red; }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 h-screen flex flex-col">
+  <div class="p-4 bg-white shadow flex items-center">
+    <h1 class="text-xl font-bold text-gray-800">🎙️ Asistente Conversacional</h1>
+    <span id="status" class="ml-3 text-sm text-gray-500">Conectando...</span>
+  </div>
+
+  <div id="chat" class="flex-1 overflow-y-auto p-4 space-y-3"></div>
+
+  <div class="p-4 bg-white shadow flex items-center space-x-3">
+    <input id="messageInput" type="text" placeholder="Escribí o usá el micrófono..."
+           class="flex-1 px-4 py-2 border rounded-lg focus:outline-none">
+    <button id="sendBtn" class="px-4 py-2 bg-blue-500 text-white rounded-lg">Enviar</button>
+    <button id="micBtn" class="px-4 py-2 bg-gray-300 rounded-full">🎤</button>
+  </div>
+
+  <script>
+    const socket = io();
+    const chat = document.getElementById("chat");
+    const input = document.getElementById("messageInput");
+    const sendBtn = document.getElementById("sendBtn");
+    const micBtn = document.getElementById("micBtn");
+    const status = document.getElementById("status");
+
+    let isRecording = false;
+    let recognition;
+
+      socket.on("connect", () => {
+      status.textContent = "Conectado";
+      renderAssistantMessage("¡Hola! Soy tu asistente con voz natural. Podés hablarme o escribirme.");
+    });
+
+    // 📌 Cuando llega un mensaje del asistente
+    socket.on("message_response", async (data) => {
+  
+  // Crear contenedor del mensaje del asistente con botón "Escuchar"
+  const div = document.createElement("div");
+  div.className = "flex justify-start";
+  div.innerHTML = `
+    <div class="px-3 py-2 rounded-lg max-w-xs bg-gray-200">
+      <span class="block text-sm">🤖 ${data.message}</span>
+      <button class="mt-2 px-2 py-1 bg-green-500 text-white text-xs rounded hover:bg-green-600">
+        🔊 Escuchar
+      </button>
+    </div>
+  `;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+
+  // 🎧 Botón de reproducir voz
+  const btn = div.querySelector("button");
+  btn.onclick = async () => {
+    try {
+      btn.disabled = true;
+      btn.textContent = "⏳ Generando...";
+
+      const audioUrl = `/speak?text=${encodeURIComponent(data.message)}`;
+      const audio = new Audio(audioUrl);
+
+      audio.oncanplaythrough = () => {
+        btn.textContent = "🔊 Escuchar otra vez";
+        btn.disabled = false;
+        audio.play();
+      };
+
+      audio.onerror = () => {
+        btn.textContent = "⚠️ Error";
+        btn.disabled = false;
+      };
+    } catch (e) {
+      console.error("Error reproduciendo voz:", e);
+      btn.textContent = "⚠️ Error";
+      btn.disabled = false;
+    }
+  };
+});
+
+    // Renderizar mensajes del usuario
+    function addMessage(sender, text) {
+      const div = document.createElement("div");
+      div.className = "flex justify-end";
+      div.innerHTML = `
+        <div class="px-3 py-2 rounded-lg max-w-xs bg-blue-500 text-white">
+          <span class="block text-sm">${sender} ${text}</span>
+        </div>`;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    // Renderizar mensajes del asistente con botón de voz
+    function renderAssistantMessage(text) {
+      const div = document.createElement("div");
+      div.className = "flex justify-start";
+      div.innerHTML = `
+        <div class="px-3 py-2 rounded-lg max-w-xs bg-gray-200">
+          <span class="block text-sm">🤖 ${text}</span>
+          <button class="mt-2 px-2 py-1 bg-green-500 text-white text-xs rounded hover:bg-green-600">
+            🔊 Escuchar
+          </button>
+        </div>
+      `;
+      chat.appendChild(div);
+      chat.scrollTop = chat.scrollHeight;
+
+      const btn = div.querySelector("button");
+      btn.onclick = async () => {
+        try {
+          btn.disabled = true;
+          btn.textContent = "⏳ Generando...";
+
+          const audioUrl = `/speak?text=${encodeURIComponent(text)}`;
+          const audio = new Audio(audioUrl);
+
+          audio.addEventListener("canplaythrough", () => {
+            btn.textContent = "🔊 Escuchar otra vez";
+            btn.disabled = false;
+            audio.play();
+          }, { once: true });
+
+          audio.addEventListener("error", () => {
+            btn.textContent = "⚠️ Error";
+            btn.disabled = false;
+          }, { once: true });
+
+        } catch (e) {
+          console.error("Error reproduciendo voz:", e);
+          btn.textContent = "⚠️ Error";
+          btn.disabled = false;
+        }
+      };
+    }
+
+    function sendMessage(text) {
+      if (!text.trim()) return;
+      addMessage("👤", text);
+      socket.emit("send_message", { message: text });
+      input.value = "";
+    }
+
+    sendBtn.onclick = () => sendMessage(input.value);
+    input.addEventListener("keypress", e => { if (e.key === "Enter") sendMessage(input.value); });
+
+    // 🎤 Voz → Texto (reconocimiento)
+    if ("webkitSpeechRecognition" in window) {
+      recognition = new webkitSpeechRecognition();
+      recognition.lang = "es-ES";
+      recognition.continuous = false;
+      recognition.interimResults = false;
+
+      recognition.onstart = () => { isRecording = true; micBtn.classList.add("recording"); };
+      recognition.onend = () => { isRecording = false; micBtn.classList.remove("recording"); };
+      recognition.onresult = (event) => {
+        const text = event.results[0][0].transcript;
+        sendMessage(text);
+      };
+
+      micBtn.onclick = () => {
+        if (isRecording) recognition.stop();
+        else recognition.start();
+      };
+    } else {
+      micBtn.disabled = true;
+      micBtn.textContent = "❌ No soportado";
+    }
+
+ // 🌤️ FUNCION DE CLIMA
+    async function consultarClima() {
+      const city = document.getElementById('city').value.trim();
+      if (!city) {
+        alert("⚠️ Ingresá una ciudad primero");
+        return;
+      }
+
+      try {
+        const resp = await fetch(`/api/weather?city=${encodeURIComponent(city)}`);
+        const data = await resp.json();
+
+        if (data.main) {
+          document.getElementById('climaOut').textContent =
+            `${data.name}: ${data.main.temp}°C, ${data.weather[0].description}`;
+        } else {
+          document.getElementById('climaOut').textContent = "No se pudo obtener el clima";
+        }
+      } catch (err) {
+        console.error("Error consultando clima:", err);
+        document.getElementById('climaOut').textContent = "Error al consultar clima";
+      }
+    }
+
+  </script>
+</body>
+</html>

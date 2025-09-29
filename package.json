@@ -1,0 +1,21 @@
+{
+  "name": "asistente-conversacional",
+  "version": "1.0.0",
+  "description": "Asistente conversacional con clima, voz y llamadas",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "Claudio Aldrian",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "openai": "^5.23.1",
+    "socket.io": "^4.8.1",
+    "twilio": "^5.10.1",
+    "uuid": "^13.0.0"
+  }
+}
