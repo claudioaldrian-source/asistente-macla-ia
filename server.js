@@ -329,6 +329,22 @@ setInterval(() => {
   if (due.length) saveDB();
 }, 5000);
 
+// --- Webhook para WhatsApp ---
+app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), (req, res) => {
+  const MessagingResponse = twilio.twiml.MessagingResponse;
+  const twiml = new MessagingResponse();
+
+  const userMessage = req.body.Body || "";
+
+  console.log("📩 WhatsApp dice:", userMessage);
+
+  // Respuesta simple de prueba
+  twiml.message(`👋 Hola! Recibí tu mensaje: "${userMessage}"`);
+
+  res.type("text/xml");
+  res.send(twiml.toString());
+});
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Asistente en http://localhost:${PORT}`);
