@@ -9,6 +9,7 @@ const path = require("path");
 const twilio = require("twilio");
 const { v4: uuidv4 } = require("uuid"); // para nombres únicos de archivos
 const { google } = require("googleapis");
+const axios = require("axios"); // si no lo tenés: npm i axios
 
 // --- GOOGLE OAUTH CLIENT ---
 function getOAuth2Client() {
@@ -47,6 +48,13 @@ async function createCalendarEvent({ summary, description, startISO, endISO, att
   return res.data;
 }
 
+    res.json({ ok: true, event: ev.htmlLink || ev.id });
+  } catch (e) {
+    console.error("Calendar test error:", e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // --- PERSISTENCIA LIGERA (JSON) ---
 const DB_PATH = path.join(__dirname, 'memory.json');
 
@@ -72,6 +80,20 @@ app.use(express.static('public'));
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
+
+// 🔧 TEST: crea un evento a 15 minutos de ahora (borralo luego)
+app.get("/dev/calendar/test", async (req, res) => {
+  try {
+    const start = new Date(Date.now() + 15*60*1000);
+    const end   = new Date(start.getTime() + 60*60*1000);
+
+    const ev = await createCalendarEvent({
+      summary: "Test MACLA-IA",
+      description: "Evento de prueba creado por el bot",
+      startISO: start.toISOString(),
+      endISO: end.toISOString(),
+      attendeesEmails: []
+    });
 
 // --- ENDPOINT DE CLIMA ---
 app.get('/api/weather', async (req, res) => {
@@ -406,12 +428,62 @@ setInterval(() => {
   if (due.length) saveDB();
 }, 5000);
 
+function splitForWhatsApp(text, maxLen = 1200) {
+  const parts = [];
+  let chunk = '';
+  for (const line of text.split('\n')) {
+    if ((chunk + '\n' + line).length > maxLen) {
+      if (chunk) parts.push(chunk);
+      chunk = line;
+    } else {
+      chunk = chunk ? chunk + '\n' + line : line;
+    }
+  }
+  if (chunk) parts.push(chunk);
+  return parts;
+}
+
 // --- Webhook para WhatsApp con OpenAI ---
 app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), async (req, res) => {
   const MessagingResponse = twilio.twiml.MessagingResponse;
   const twiml = new MessagingResponse();
+  
+  let userMessage = req.body.Body || "";
+const numMedia = parseInt(req.body.NumMedia || "0", 10);
 
-  const userMessage = req.body.Body || "";
+if (numMedia > 0) {
+  const mediaUrl = req.body.MediaUrl0;
+  const contentType = req.body.MediaContentType0 || "";
+
+  // Solo procesamos audio (voice notes)
+  if (contentType.startsWith("audio")) {
+    try {
+      // Descargar el archivo de Twilio con auth básica
+      const mediaResp = await axios.get(mediaUrl, {
+        responseType: "arraybuffer",
+        auth: {
+          username: process.env.TWILIO_ACCOUNT_SID,
+          password: process.env.TWILIO_AUTH_TOKEN
+        }
+      });
+
+      const tmpPath = path.join(__dirname, "tmp_voice.ogg");
+      fs.writeFileSync(tmpPath, mediaResp.data);
+
+      // Transcripción con OpenAI
+      const transcription = await openai.audio.transcriptions.create({
+        file: fs.createReadStream(tmpPath),
+        model: "whisper-1",      // o "gpt-4o-mini-transcribe" si preferís
+        language: "es"
+      });
+
+      userMessage = (userMessage ? userMessage + " " : "") + (transcription.text || "");
+      fs.unlinkSync(tmpPath);  // limpiar
+    } catch (e) {
+      console.error("Transcripción audio WA error:", e.message);
+    }
+  }
+}
 
 try {
   const intent = await classifyAndExtractIntent(userMessage);
@@ -473,10 +545,11 @@ try {
 
     const reply = aiResponse.choices[0].message.content;
 
-    // 🔹 Enviamos la respuesta a WhatsApp
-    twiml.message(reply);
+      // 🔹 Enviamos la respuesta a WhatsApp en partes si es muy larga
+    const chunks = splitForWhatsApp(reply);
+    chunks.forEach(c => twiml.message(c));
 
-  } catch (error) {
+     } catch (error) {
     console.error("❌ Error en WhatsApp webhook:", error);
     twiml.message("⚠️ Lo siento, tuve un problema procesando tu mensaje.");
   }
