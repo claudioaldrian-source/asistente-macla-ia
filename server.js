@@ -4,17 +4,20 @@ const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const { OpenAI } = require('openai');
-const fs = require("fs");
-const path = require("path");
-const twilio = require("twilio");
-const { v4: uuidv4 } = require("uuid");
-const { google } = require("googleapis");
-const axios = require("axios");
+const fs = require('fs');
+const path = require('path');
+const twilio = require('twilio');
+const { v4: uuidv4 } = require('uuid');
+const { google } = require('googleapis');
+const axios = require('axios');
 
-// OpenAI
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// --- Polyfill de fetch (por si el runtime no lo trae) ---
+if (typeof fetch === 'undefined') {
+  global.fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
+}
+
+// --- OpenAI ---
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // --- GOOGLE OAUTH CLIENT ---
 function getOAuth2Client() {
@@ -30,11 +33,13 @@ function getOAuth2Client() {
     GOOGLE_CLIENT_SECRET,
     GOOGLE_REDIRECT_URI
   );
-  oAuth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
+  if (GOOGLE_REFRESH_TOKEN) {
+    oAuth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
+  }
   return oAuth2Client;
 }
 
-// --- CALENDAR HELPER ---
+// --- CALENDAR HELPERS ---
 async function createCalendarEvent({ summary, description, startISO, endISO, attendeesEmails = [] }) {
   const auth = getOAuth2Client();
   const calendar = google.calendar({ version: "v3", auth });
@@ -43,8 +48,8 @@ async function createCalendarEvent({ summary, description, startISO, endISO, att
     summary: summary || "Evento",
     description: description || "",
     start: { dateTime: startISO },
-    end: { dateTime: endISO },
-    attendees: attendeesEmails.map(email => ({ email })),
+    end: { dateTime: endISO || new Date(Date.parse(startISO) + 60 * 60 * 1000).toISOString() },
+    attendees: (attendeesEmails || []).map(email => ({ email })),
     reminders: { useDefault: true }
   };
 
@@ -53,7 +58,7 @@ async function createCalendarEvent({ summary, description, startISO, endISO, att
   return res.data;
 }
 
-// --- INTENT PARSER ---
+// --- INTENT: decidir si es recordatorio local o evento de calendario ---
 async function classifyAndExtractIntent(userText) {
   const sys = `Sos un parser. Tu única salida debe ser JSON válido sin explicación.
 {
@@ -63,7 +68,13 @@ async function classifyAndExtractIntent(userText) {
   "startISO": "YYYY-MM-DDTHH:mm:ssZ | ''",
   "endISO": "YYYY-MM-DDTHH:mm:ssZ | ''",
   "attendees": ["correo@ej.com", "..."]
-}`;
+}
+Reglas:
+- Si el usuario pide "agendar", "reunión", "turno", "cita", o da fecha/hora concreta -> intent = "calendar_event".
+- Si dice "recordame", "acordate", "guardame", sin fecha clara -> intent = "local_reminder".
+- Si hay fecha/hora clara pero dice "recordame", interpretá como calendar_event.
+- Cuando haya hora pero no duración, poné endISO = startISO + 60 minutos.
+- startISO/endISO en formato ISO UTC (si no podés inferir, dejá '').`;
 
   const completion = await openai.chat.completions.create({
     model: "gpt-4o-mini",
@@ -76,13 +87,11 @@ async function classifyAndExtractIntent(userText) {
   });
 
   let data = { intent: "none", summary: "", description: "", startISO: "", endISO: "", attendees: [] };
-  try {
-    data = JSON.parse(completion.choices?.[0]?.message?.content || "{}");
-  } catch (_) {}
+  try { data = JSON.parse(completion.choices?.[0]?.message?.content || "{}"); } catch (_) {}
   return data;
 }
 
-// --- MEMORIA SIMPLE ---
+// --- PERSISTENCIA LIGERA (JSON) ---
 const DB_PATH = path.join(__dirname, 'memory.json');
 let db = { users: {}, reminders: [] };
 if (fs.existsSync(DB_PATH)) {
@@ -91,14 +100,14 @@ if (fs.existsSync(DB_PATH)) {
 }
 const saveDB = () => fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
 
-// --- CONVERSACIÓN CON MEMORIA ---
+// --- Conversación con memoria ---
 class ConversationEngine {
   constructor() { this.conversations = new Map(); }
   async processMessage(conversationId, message) {
     if (!this.conversations.has(conversationId)) {
       this.conversations.set(conversationId, {
         messages: [
-          { role: "system", content: "Eres un asistente argentino, amable, natural y cercano." }
+          { role: "system", content: "Eres un asistente argentino, amable, natural y cercano. Responde claro y útil." }
         ]
       });
     }
@@ -128,31 +137,12 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// --- ENDPOINTS ---
+// --- HOME ---
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-// Calendar test
-app.get("/dev/calendar/test", async (req, res) => {
-  try {
-    const start = new Date(Date.now() + 15 * 60 * 1000);
-    const end = new Date(start.getTime() + 60 * 60 * 1000);
-    const ev = await createCalendarEvent({
-      summary: "Test MACLA-IA",
-      description: "Evento de prueba",
-      startISO: start.toISOString(),
-      endISO: end.toISOString(),
-      attendeesEmails: []
-    });
-    res.json({ ok: true, event: ev.htmlLink || ev.id });
-  } catch (e) {
-    console.error("Calendar test error:", e);
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
-
-// Clima
+// --- CLIMA API ---
 app.get('/api/weather', async (req, res) => {
   try {
     const key = process.env.OPENWEATHER_API_KEY;
@@ -162,46 +152,218 @@ app.get('/api/weather', async (req, res) => {
     const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${key}&units=metric&lang=es`;
     const r = await fetch(url);
     res.json(await r.json());
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Error al consultar clima' });
   }
 });
 
-// Voice (Twilio calls)
-app.post("/process_voice", express.urlencoded({ extended: false }), async (req, res) => {
-  const userText = req.body.TranscriptionText || "No entendí bien.";
-  const aiResponse = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      { role: "system", content: "Sos un asistente breve para llamadas." },
-      { role: "user", content: userText }
-    ],
-    max_tokens: 80
-  });
-  const reply = aiResponse.choices[0].message.content;
+// --- TTS WEB: /speak (botón verde) ---
+app.get("/speak", async (req, res) => {
+  try {
+    const text = req.query.text || "Hola, soy tu asistente con voz natural";
+    const mp3 = await openai.audio.speech.create({
+      model: "gpt-4o-mini-tts",
+      voice: "alloy",
+      input: text,
+    });
+    const buffer = Buffer.from(await mp3.arrayBuffer());
+    res.set({ "Content-Type": "audio/mpeg", "Content-Length": buffer.length });
+    res.send(buffer);
+  } catch (err) {
+    console.error("Error en TTS /speak:", err.message);
+    res.status(500).send("Error generando audio");
+  }
+});
 
-  const mp3 = await openai.audio.speech.create({
-    model: "gpt-4o-mini-tts",
-    voice: "alloy",
-    input: reply
-  });
-  const buffer = Buffer.from(await mp3.arrayBuffer());
-  const filename = `${uuidv4()}.mp3`;
-  const filepath = path.join(__dirname, "public", "tts", filename);
-  fs.mkdirSync(path.join(__dirname, "public", "tts"), { recursive: true });
-  fs.writeFileSync(filepath, buffer);
-
+// --- TWILIO VOICE: saludo + bucle ---
+app.post("/voice", (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
-  twiml.play(`${req.protocol}://${req.get("host")}/tts/${filename}`);
+  twiml.say({ voice: "alice", language: "es-ES" }, "Hola, soy tu asistente. Decime algo y te respondo.");
   twiml.record({ action: "/process_voice", transcribe: true, maxLength: 10, playBeep: true });
   res.type("text/xml").send(twiml.toString());
 });
 
-// WhatsApp webhook
+app.post("/process_voice", express.urlencoded({ extended: false }), async (req, res) => {
+  try {
+    const userText = req.body.TranscriptionText || "No entendí bien.";
+    const aiResponse = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "Sos un asistente amable y natural. Respondé breve porque es una llamada de voz." },
+        { role: "user", content: userText }
+      ],
+      max_tokens: 80
+    });
+    const reply = aiResponse.choices[0].message.content;
+
+    const mp3 = await openai.audio.speech.create({
+      model: "gpt-4o-mini-tts",
+      voice: "alloy",
+      input: reply
+    });
+
+    const buffer = Buffer.from(await mp3.arrayBuffer());
+    const filename = `${uuidv4()}.mp3`;
+    const filepath = path.join(__dirname, "public", "tts", filename);
+    fs.mkdirSync(path.join(__dirname, "public", "tts"), { recursive: true });
+    fs.writeFileSync(filepath, buffer);
+
+    const twiml = new twilio.twiml.VoiceResponse();
+    twiml.play(`${req.protocol}://${req.get("host")}/tts/${filename}`);
+    twiml.record({ action: "/process_voice", transcribe: true, maxLength: 10, playBeep: true });
+    res.type("text/xml").send(twiml.toString());
+  } catch (e) {
+    console.error("process_voice error:", e.message);
+    const twiml = new twilio.twiml.VoiceResponse();
+    twiml.say({ voice: "alice", language: "es-ES" }, "Tuvimos un problemita. Corto acá.");
+    res.type("text/xml").send(twiml.toString());
+  }
+});
+
+// --- WEBSOCKET: chat web con clima + intents (calendar/reminder) ---
+io.on('connection', (socket) => {
+  console.log(`Cliente conectado: ${socket.id}`);
+
+  socket.on('send_message', async (data) => {
+    try {
+      const textLower = (data.message || "").toLowerCase();
+      const id = socket.data.identity || `anon-${socket.id}`;
+      db.users[id] = db.users[id] || { prefs: {} };
+
+      // 1) Intent (calendar vs reminder)
+      const intent = await classifyAndExtractIntent(data.message);
+
+      if (intent.intent === "calendar_event" && intent.startISO) {
+        try {
+          const event = await createCalendarEvent({
+            summary: intent.summary || "Evento",
+            description: intent.description || `Creado por MACLA-IA`,
+            startISO: intent.startISO,
+            endISO: intent.endISO,
+            attendeesEmails: intent.attendees || []
+          });
+          socket.emit('message_response', {
+            message: `✅ Listo, agendé **${event.summary}** para el ${new Date(event.start.dateTime || event.start.date).toLocaleString()}.`,
+            timestamp: new Date()
+          });
+          return;
+        } catch (e) {
+          console.error("Calendar error (web):", e.message);
+          socket.emit('message_response', { message: "⚠️ No pude crear el evento. Probá con fecha y hora claras (ej: 'jueves 10:00').", timestamp: new Date() });
+          return;
+        }
+      }
+
+      if (intent.intent === "local_reminder" && !intent.startISO) {
+        const r = { id: `r_${Date.now()}`, identity: id, text: intent.summary || data.message, dueAt: Date.now() + 30 * 60 * 1000, done: false };
+        db.reminders.push(r);
+        saveDB();
+        socket.emit('message_response', { message: `📝 Listo, te lo guardé como recordatorio. Si querés hora exacta decime “recordame hoy a las 21 ...”.`, timestamp: new Date() });
+        return;
+      }
+
+      // 2) Clima (web)
+      if (textLower.includes("clima") || textLower.includes("tiempo")) {
+        const extraction = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: "Sos un extractor. Respondé SOLO con el nombre de la ciudad o 'ninguna'." },
+            { role: "user", content: data.message }
+          ],
+          max_tokens: 20,
+          temperature: 0
+        });
+
+        let city = extraction.choices[0].message.content.trim();
+        if (city.toLowerCase() === "ninguna") {
+          city = db.users[id].prefs.city || "Avellaneda,AR";
+        } else {
+          db.users[id].prefs.city = city;
+          saveDB();
+        }
+
+        const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric&lang=es`;
+        const r = await fetch(url);
+        const weather = await r.json();
+
+        const climaMsg = weather?.main
+          ? `En ${weather.name} hay ${weather.main.temp}°C con ${weather.weather?.[0]?.description || 'cielo variable'}.`
+          : `⚠️ No pude obtener el clima de "${city}".`;
+
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: "Sos un asistente natural, cercano y argentino. Si hay datos de clima, integralos en la respuesta de manera natural." },
+            { role: "user", content: `Mensaje del usuario: "${data.message}". Datos de clima: "${climaMsg}".` }
+          ],
+          max_tokens: 250,
+          temperature: 0.9
+        });
+
+        const finalReply = response.choices[0].message.content;
+        socket.emit('message_response', { message: finalReply, timestamp: new Date() });
+        return;
+      }
+
+      // 3) Conversación normal
+      const response = await conversationEngine.processMessage(socket.id, data.message);
+      socket.emit('message_response', response);
+
+    } catch (error) {
+      console.error("Error en procesamiento (web):", error.message);
+      socket.emit('error', { message: 'Error procesando el mensaje' });
+    }
+  });
+
+  socket.on('disconnect', () => console.log(`Cliente desconectado: ${socket.id}`));
+
+  socket.on('whoami', (identity) => {
+    socket.data.identity = identity || `anon-${socket.id}`;
+    if (!db.users[socket.data.identity]) db.users[socket.data.identity] = { prefs: {} };
+    saveDB();
+  });
+
+  socket.on('memory:update', (prefs) => {
+    const id = socket.data.identity || `anon-${socket.id}`;
+    db.users[id] = db.users[id] || { prefs: {} };
+    db.users[id].prefs = { ...db.users[id].prefs, ...prefs };
+    saveDB();
+    socket.emit('memory:ok', db.users[id]);
+  });
+
+  socket.on('reminder:create', ({ text, when }) => {
+    const id = socket.data.identity || `anon-${socket.id}`;
+    const dueAt = typeof when === 'number' ? when : Date.parse(when);
+    const r = { id: `r_${Date.now()}`, identity: id, text, dueAt, done: false };
+    db.reminders.push(r);
+    saveDB();
+    socket.emit('reminder:created', r);
+  });
+
+  socket.on('reminder:list', () => {
+    const id = socket.data.identity || `anon-${socket.id}`;
+    const list = db.reminders.filter(r => r.identity === id);
+    socket.emit('reminder:list', list);
+  });
+});
+
+// --- Recordatorios recurrentes ---
+setInterval(() => {
+  const now = Date.now();
+  const due = db.reminders.filter(r => !r.done && r.dueAt <= now);
+  due.forEach(r => {
+    const target = [...io.sockets.sockets.values()].find(s => s.data?.identity === r.identity);
+    if (target) target.emit('reminder:fire', r);
+    r.done = true;
+  });
+  if (due.length) saveDB();
+}, 5000);
+
+// --- WhatsApp helpers ---
 function splitForWhatsApp(text, maxLen = 1200) {
   const parts = [];
   let chunk = '';
-  for (const line of text.split('\n')) {
+  for (const line of String(text).split('\n')) {
     if ((chunk + '\n' + line).length > maxLen) {
       if (chunk) parts.push(chunk);
       chunk = line;
@@ -213,12 +375,16 @@ function splitForWhatsApp(text, maxLen = 1200) {
   return parts;
 }
 
+// --- Webhook WhatsApp (texto + audios + clima + calendar) ---
 app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), async (req, res) => {
   const MessagingResponse = twilio.twiml.MessagingResponse;
   const twiml = new MessagingResponse();
+
   let userMessage = req.body.Body || "";
+  const from = req.body.From || "wa-user";
   const numMedia = parseInt(req.body.NumMedia || "0", 10);
 
+  // Si viene audio, lo bajo y lo transcribo
   if (numMedia > 0) {
     const mediaUrl = req.body.MediaUrl0;
     const contentType = req.body.MediaContentType0 || "";
@@ -240,49 +406,134 @@ app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), async (re
         });
         userMessage += " " + (transcription.text || "");
         fs.unlinkSync(tmpPath);
-      } catch (e) { console.error("Transcripción WA error:", e.message); }
+      } catch (e) {
+        console.error("Transcripción WA error:", e.message);
+      }
     }
   }
 
+  // INTENTS (calendar / reminder)
   try {
     const intent = await classifyAndExtractIntent(userMessage);
-    if (intent.intent === "calendar_event" && intent.startISO) {
-      const event = await createCalendarEvent(intent);
-      twiml.message(`✅ Agendado: *${event.summary}* el ${new Date(event.start.dateTime).toLocaleString()}`);
-      return res.type("text/xml").send(twiml.toString());
-    }
-    if (intent.intent === "local_reminder") {
-      const r = { id: `r_${Date.now()}`, identity: req.body.From, text: intent.summary || userMessage, dueAt: Date.now() + 30 * 60 * 1000, done: false };
-      db.reminders.push(r); saveDB();
-      twiml.message("📝 Listo, te lo guardé como recordatorio.");
-      return res.type("text/xml").send(twiml.toString());
-    }
-  } catch (e) { console.error("Intent WA error:", e); }
 
-  const aiResponse = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      { role: "system", content: "Sos un asistente argentino, amable y natural." },
-      { role: "user", content: userMessage }
-    ]
-  });
-  splitForWhatsApp(aiResponse.choices[0].message.content).forEach(c => twiml.message(c));
-  res.type("text/xml").send(twiml.toString());
+    if (intent.intent === "calendar_event" && intent.startISO) {
+      try {
+        const event = await createCalendarEvent({
+          summary: intent.summary || "Evento",
+          description: intent.description || `Creado por MACLA-IA`,
+          startISO: intent.startISO,
+          endISO: intent.endISO,
+          attendeesEmails: intent.attendees || []
+        });
+        twiml.message(`✅ Agendado: *${event.summary}* el ${new Date(event.start.dateTime || event.start.date).toLocaleString()}.`);
+        return res.type("text/xml").send(twiml.toString());
+      } catch (e) {
+        console.error("Calendar error (WA):", e.message);
+        twiml.message("⚠️ No pude crear el evento en Google Calendar. Probá con fecha y hora claras (ej: 'jueves 10:00').");
+        return res.type("text/xml").send(twiml.toString());
+      }
+    }
+
+    if (intent.intent === "local_reminder" && !intent.startISO) {
+      const r = { id: `r_${Date.now()}`, identity: from, text: intent.summary || userMessage, dueAt: Date.now() + 30 * 60 * 1000, done: false };
+      db.reminders.push(r); saveDB();
+      twiml.message("📝 Listo, te lo guardé como recordatorio. Si querés hora exacta decime: 'recordame hoy a las 21 ...'.");
+      return res.type("text/xml").send(twiml.toString());
+    }
+  } catch (e) { console.error("Intent WA error:", e.message); }
+
+  // CLIMA (WA)
+  const lower = userMessage.toLowerCase();
+  if (lower.includes("clima") || lower.includes("tiempo")) {
+    try {
+      const extraction = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "Sos un extractor. Respondé SOLO con el nombre de la ciudad o 'ninguna'." },
+          { role: "user", content: userMessage }
+        ],
+        max_tokens: 20,
+        temperature: 0
+      });
+
+      let city = (extraction.choices?.[0]?.message?.content || "").trim();
+      if (city.toLowerCase() === "ninguna") {
+        city = (db.users[from]?.prefs?.city) || "Avellaneda,AR";
+      } else {
+        db.users[from] = db.users[from] || { prefs: {} };
+        db.users[from].prefs.city = city;
+        saveDB();
+      }
+
+      const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric&lang=es`;
+      const r = await fetch(url);
+      const weather = await r.json();
+
+      const climaMsg = weather?.main
+        ? `En ${weather.name} hay ${weather.main.temp}°C con ${weather.weather?.[0]?.description || "cielo variable"}.`
+        : `⚠️ No pude obtener el clima de "${city}".`;
+
+      const ai = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "Sos un asistente natural, cercano y argentino. Integrá los datos de clima como un consejo útil." },
+          { role: "user", content: `Mensaje del usuario: "${userMessage}". Datos de clima: "${climaMsg}".` }
+        ],
+        max_tokens: 200,
+        temperature: 0.7
+      });
+
+      twiml.message(ai.choices[0].message.content);
+      return res.type("text/xml").send(twiml.toString());
+    } catch (e) {
+      console.error("Clima WA error:", e.message);
+    }
+  }
+
+  // Conversación normal + (OPCIONAL) adjuntar audio TTS en WA
+  try {
+    const aiResponse = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "Sos un asistente argentino, amable y natural." },
+        { role: "user", content: userMessage }
+      ],
+      max_tokens: 180
+    });
+    const reply = aiResponse.choices[0].message.content;
+
+    // Enviar en partes si es largo
+    const chunks = splitForWhatsApp(reply);
+    chunks.forEach(c => twiml.message(c));
+
+    // Adjuntar también audio (MP3) con TTS (opcional, activo)
+    try {
+      const mp3 = await openai.audio.speech.create({
+        model: "gpt-4o-mini-tts",
+        voice: "alloy",
+        input: reply
+      });
+      const buffer = Buffer.from(await mp3.arrayBuffer());
+      const filename = `wa-${Date.now()}.mp3`;
+      const outDir = path.join(__dirname, "public", "tts");
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(path.join(outDir, filename), buffer);
+      const publicUrl = `${req.protocol}://${req.get("host")}/tts/${filename}`;
+      const m = twiml.message(""); // mensaje vacío con media
+      m.media(publicUrl);
+    } catch (e) {
+      console.warn("No se pudo adjuntar audio TTS en WA:", e.message);
+    }
+
+    res.type("text/xml").send(twiml.toString());
+  } catch (error) {
+    console.error("❌ Error en WhatsApp webhook:", error.message);
+    twiml.message("⚠️ Lo siento, tuve un problema procesando tu mensaje.");
+    res.type("text/xml").send(twiml.toString());
+  }
 });
 
-// --- RECORDATORIOS ---
-setInterval(() => {
-  const now = Date.now();
-  const due = db.reminders.filter(r => !r.done && r.dueAt <= now);
-  due.forEach(r => {
-    const target = [...io.sockets.sockets.values()].find(s => s.data?.identity === r.identity);
-    if (target) target.emit('reminder:fire', r);
-    r.done = true;
-  });
-  if (due.length) saveDB();
-}, 5000);
-
-// --- Endpoint para generar link de autorización con Google Calendar ---
+// --- OAuth2: generar link ---
 app.get("/get_token", (req, res) => {
   const oAuth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
@@ -296,26 +547,24 @@ app.get("/get_token", (req, res) => {
     scope: ["https://www.googleapis.com/auth/calendar"],
   });
 
-  console.log("CLIENT_ID =", process.env.GOOGLE_CLIENT_ID);
-  console.log("REDIRECT_URI =", process.env.GOOGLE_REDIRECT_URI);
-  console.log("Auth URL generado =", authUrl);
+  console.log("CLIENT_ID   =", process.env.GOOGLE_CLIENT_ID);
+  console.log("REDIRECT_URI=", process.env.GOOGLE_REDIRECT_URI);
+  console.log("Auth URL    =", authUrl);
 
   res.send(`
-    <p>CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID}</p>
-    <p>REDIRECT_URI: ${process.env.GOOGLE_REDIRECT_URI}</p>
+    <p>CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID || "(vacío)"}</p>
+    <p>REDIRECT_URI: ${process.env.GOOGLE_REDIRECT_URI || "(vacío)"}</p>
     <a href="${authUrl}" target="_blank">Haz clic aquí para autorizar con Google</a>
   `);
 });
 
-// OAuth2 Callback
+// --- OAuth2: callback para capturar refresh_token ---
 app.get("/oauth2callback", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.send("No code provided");
-  
   try {
     const auth = getOAuth2Client();
     const { tokens } = await auth.getToken(code);
-    
     res.send(`
       <h1>✅ Autorización exitosa</h1>
       <p>Copia este refresh token y agrégalo a Railway como GOOGLE_REFRESH_TOKEN:</p>
