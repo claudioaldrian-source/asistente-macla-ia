@@ -48,6 +48,20 @@ async function createCalendarEvent({ summary, description, startISO, endISO, att
   return res.data;
 }
 
+// 🔧 TEST: crea un evento a 15 minutos de ahora (borralo luego)
+app.get("/dev/calendar/test", async (req, res) => {
+  try {
+    const start = new Date(Date.now() + 15*60*1000);
+    const end   = new Date(start.getTime() + 60*60*1000);
+
+    const ev = await createCalendarEvent({
+      summary: "Test MACLA-IA",
+      description: "Evento de prueba creado por el bot",
+      startISO: start.toISOString(),
+      endISO: end.toISOString(),
+      attendeesEmails: []
+    });
+
     res.json({ ok: true, event: ev.htmlLink || ev.id });
   } catch (e) {
     console.error("Calendar test error:", e);
