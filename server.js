@@ -11,6 +11,11 @@ const { v4: uuidv4 } = require("uuid");
 const { google } = require("googleapis");
 const axios = require("axios");
 
+// OpenAI
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
 // --- GOOGLE OAUTH CLIENT ---
 function getOAuth2Client() {
   const {
@@ -319,21 +324,6 @@ app.get("/oauth2callback", async (req, res) => {
   } catch (e) {
     res.send(`Error: ${e.message}`);
   }
-});
-
-// Get token endpoint
-app.get("/get_token", (req, res) => {
-  const auth = getOAuth2Client();
-  const authUrl = auth.generateAuthUrl({
-    access_type: 'offline',
-    scope: ['https://www.googleapis.com/auth/calendar']
-  });
-  
-  res.send(`
-    <h1>Obtener Token de Google Calendar</h1>
-    <p>Haz clic en el enlace para autorizar:</p>
-    <a href="${authUrl}" target="_blank">Autorizar con Google</a>
-  `);
 });
 
 // --- SERVER START ---
