@@ -302,6 +302,40 @@ app.get("/get_token", (req, res) => {
   `);
 });
 
+// OAuth2 Callback
+app.get("/oauth2callback", async (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.send("No code provided");
+  
+  try {
+    const auth = getOAuth2Client();
+    const { tokens } = await auth.getToken(code);
+    
+    res.send(`
+      <h1>✅ Autorización exitosa</h1>
+      <p>Copia este refresh token y agrégalo a Railway como GOOGLE_REFRESH_TOKEN:</p>
+      <pre style="background:#f4f4f4;padding:20px;border-radius:5px;">${tokens.refresh_token || 'Ya existe un refresh token activo'}</pre>
+    `);
+  } catch (e) {
+    res.send(`Error: ${e.message}`);
+  }
+});
+
+// Get token endpoint
+app.get("/get_token", (req, res) => {
+  const auth = getOAuth2Client();
+  const authUrl = auth.generateAuthUrl({
+    access_type: 'offline',
+    scope: ['https://www.googleapis.com/auth/calendar']
+  });
+  
+  res.send(`
+    <h1>Obtener Token de Google Calendar</h1>
+    <p>Haz clic en el enlace para autorizar:</p>
+    <a href="${authUrl}" target="_blank">Autorizar con Google</a>
+  `);
+});
+
 // --- SERVER START ---
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`🚀 Asistente en http://localhost:${PORT}`));
