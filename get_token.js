@@ -1,19 +1,26 @@
-// get_token.js
-require("dotenv").config();
-const { google } = require("googleapis");
+require('dotenv').config();
+const { google } = require('googleapis');
+const { URL } = require('url');
 
-// 1. Crear cliente OAuth2
-const oAuth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.GOOGLE_REDIRECT_URI
-);
+function must(k){ const v=process.env[k]; if(!v){console.error('Falta',k); process.exit(1)}; return v; }
 
-// 2. Generar URL de autorización
-const authUrl = oAuth2Client.generateAuthUrl({
-  access_type: "offline",
-  scope: ["https://www.googleapis.com/auth/calendar"],
-  prompt: "consent"
+const CLIENT_ID = must('GOOGLE_CLIENT_ID');
+const CLIENT_SECRET = must('GOOGLE_CLIENT_SECRET');
+const REDIRECT_URI = must('GOOGLE_REDIRECT_URI');
+
+console.log('CLIENT_ID         =', CLIENT_ID);
+console.log('GOOGLE_REDIRECT_URI =', REDIRECT_URI);
+
+const oauth = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+const authUrl = oauth.generateAuthUrl({
+  access_type: 'offline',
+  prompt: 'consent',
+  scope: ['https://www.googleapis.com/auth/calendar'],
 });
 
-console.log("👉 Abrí este link en tu navegador y aceptá permisos:\n", authUrl);
+console.log('\nAbrí este link:\n', authUrl, '\n');
+
+const parsed = new URL(authUrl);
+console.log('redirect_uri QUE LEE GOOGLE =', parsed.searchParams.get('redirect_uri'));
+console.log('client_id   QUE LEE GOOGLE =', parsed.searchParams.get('client_id'));
+console.log('\n→ Si alguno NO coincide EXACTO con lo configurado en el cliente OAuth, va a fallar.\n');
