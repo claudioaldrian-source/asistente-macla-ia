@@ -279,7 +279,6 @@ setInterval(() => {
 
 // --- Endpoint para generar link de autorización con Google Calendar ---
 app.get("/get_token", (req, res) => {
-  const { google } = require("googleapis");
   const oAuth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
@@ -292,7 +291,15 @@ app.get("/get_token", (req, res) => {
     scope: ["https://www.googleapis.com/auth/calendar"],
   });
 
-  res.send(`<a href="${authUrl}" target="_blank">Haz clic aquí para autorizar con Google</a>`);
+  console.log("CLIENT_ID =", process.env.GOOGLE_CLIENT_ID);
+  console.log("REDIRECT_URI =", process.env.GOOGLE_REDIRECT_URI);
+  console.log("Auth URL generado =", authUrl);
+
+  res.send(`
+    <p>CLIENT_ID: ${process.env.GOOGLE_CLIENT_ID}</p>
+    <p>REDIRECT_URI: ${process.env.GOOGLE_REDIRECT_URI}</p>
+    <a href="${authUrl}" target="_blank">Haz clic aquí para autorizar con Google</a>
+  `);
 });
 
 // --- SERVER START ---
