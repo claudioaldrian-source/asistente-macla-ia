@@ -425,9 +425,19 @@ app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), async (re
           endISO: intent.endISO,
           attendeesEmails: intent.attendees || []
         });
-        twiml.message(`✅ Agendado: *${event.summary}* el ${new Date(event.start.dateTime || event.start.date).toLocaleString()}.`);
+       
+        twiml.message(
+     `✅ Agendado: *${event.summary}* el ${new Date(event.start.dateTime).toLocaleDateString("es-AR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+      })}`
+      );
+
         return res.type("text/xml").send(twiml.toString());
-      } catch (e) {
+        } catch (e) {
         console.error("Calendar error (WA):", e.message);
         twiml.message("⚠️ No pude crear el evento en Google Calendar. Probá con fecha y hora claras (ej: 'jueves 10:00').");
         return res.type("text/xml").send(twiml.toString());
