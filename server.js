@@ -100,6 +100,38 @@ if (fs.existsSync(DB_PATH)) {
 }
 const saveDB = () => fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
 
+// --- RECORDATORIOS RELATIVOS A EVENTOS ---
+function scheduleReminder(eventId, eventSummary, startISO, minutesBefore, targetSocketOrFrom) {
+  if (!startISO) return;
+  const eventDate = new Date(startISO);
+  const reminderTime = new Date(eventDate.getTime() - minutesBefore * 60 * 1000);
+  const now = new Date();
+
+  const delay = reminderTime.getTime() - now.getTime();
+  if (delay <= 0) {
+    console.log("⏰ La hora de recordatorio ya pasó");
+    return;
+  }
+
+  setTimeout(() => {
+    const msg = `⏰ Recordatorio: ${eventSummary} en ${minutesBefore} minutos.`;
+    // Websocket
+    if (typeof targetSocketOrFrom === "object" && targetSocketOrFrom.emit) {
+      targetSocketOrFrom.emit("reminder:fire", { eventId, text: msg });
+    }
+    // WhatsApp
+    if (typeof targetSocketOrFrom === "string") {
+      const MessagingResponse = twilio.twiml.MessagingResponse;
+      const twiml = new MessagingResponse();
+      twiml.message(msg);
+      // Podrías enviar con twilioClient.messages.create() si preferís push inmediato
+      console.log(`Recordatorio WA → ${targetSocketOrFrom}: ${msg}`);
+    }
+  }, delay);
+
+  console.log(`⏰ Recordatorio programado: ${eventSummary} (${minutesBefore} min antes)`);
+}
+
 // --- Conversación con memoria ---
 class ConversationEngine {
   constructor() { this.conversations = new Map(); }
@@ -242,6 +274,10 @@ io.on('connection', (socket) => {
             endISO: intent.endISO,
             attendeesEmails: intent.attendees || []
           });
+          
+          // Programar recordatorio 60 minutos antes
+          scheduleReminder(event.id, event.summary, intent.startISO, 60, socket);
+
           socket.emit('message_response', {
             message: `✅ Listo, agendé **${event.summary}** para el ${new Date(event.start.dateTime || event.start.date).toLocaleString()}.`,
             timestamp: new Date()
@@ -286,9 +322,19 @@ io.on('connection', (socket) => {
         const r = await fetch(url);
         const weather = await r.json();
 
-        const climaMsg = weather?.main
-          ? `En ${weather.name} hay ${weather.main.temp}°C con ${weather.weather?.[0]?.description || 'cielo variable'}.`
-          : `⚠️ No pude obtener el clima de "${city}".`;
+        let climaMsg;
+        if (weather?.main) {
+        const timezoneOffset = weather.timezone || 0;
+        const utcNow = new Date();
+        const localTime = new Date(utcNow.getTime() + timezoneOffset * 1000);
+        const horaLocal = localTime.toLocaleTimeString("es-AR", {
+        hour: "2-digit",
+        minute: "2-digit"
+         });
+         climaMsg = `En ${weather.name} hay ${weather.main.temp}°C con ${weather.weather?.[0]?.description || "cielo variable"}. Hora local: ${horaLocal}.`;
+        } else {
+        climaMsg = `⚠️ No pude obtener el clima de "${city}".`;
+        }
 
         const response = await openai.chat.completions.create({
           model: "gpt-4o-mini",
@@ -310,31 +356,31 @@ io.on('connection', (socket) => {
       socket.emit('message_response', response);
 
       // dividir en trozos de 1000–1200 caracteres
-const parts = [];
-for (let i = 0; i < reply.length; i += 1000) {
-  parts.push(reply.slice(i, i + 1000));
-}
+      const parts = [];
+      for (let i = 0; i < reply.length; i += 1000) {
+       parts.push(reply.slice(i, i + 1000));
+      }
 
-// mandar cada parte al cliente web
-parts.forEach(part => {
-  socket.emit('message_response', { message: part, timestamp: new Date() });
-});
+      // mandar cada parte al cliente web
+      parts.forEach(part => {
+      socket.emit('message_response', { message: part, timestamp: new Date() });
+      });
 
-    } catch (error) {
+      } catch (error) {
       console.error("Error en procesamiento (web):", error.message);
       socket.emit('error', { message: 'Error procesando el mensaje' });
-    }
-  });
+     }
+      });
 
-  socket.on('disconnect', () => console.log(`Cliente desconectado: ${socket.id}`));
+     socket.on('disconnect', () => console.log(`Cliente desconectado: ${socket.id}`));
 
-  socket.on('whoami', (identity) => {
-    socket.data.identity = identity || `anon-${socket.id}`;
-    if (!db.users[socket.data.identity]) db.users[socket.data.identity] = { prefs: {} };
-    saveDB();
-  });
+     socket.on('whoami', (identity) => {
+     socket.data.identity = identity || `anon-${socket.id}`;
+     if (!db.users[socket.data.identity]) db.users[socket.data.identity] = { prefs: {} };
+     saveDB();
+     });
 
-  socket.on('memory:update', (prefs) => {
+    socket.on('memory:update', (prefs) => {
     const id = socket.data.identity || `anon-${socket.id}`;
     db.users[id] = db.users[id] || { prefs: {} };
     db.users[id].prefs = { ...db.users[id].prefs, ...prefs };
@@ -464,6 +510,9 @@ if (match) {
           endISO: intent.endISO,
           attendeesEmails: intent.attendees || []
         });
+
+        // Programar recordatorio 60 minutos antes del evento
+        scheduleReminder(event.id, event.summary, intent.startISO, 60, from);
        
         twiml.message(
      `✅ Agendado: *${event.summary}* el ${new Date(event.start.dateTime).toLocaleDateString("es-AR", {
@@ -518,9 +567,19 @@ if (match) {
       const r = await fetch(url);
       const weather = await r.json();
 
-      const climaMsg = weather?.main
-        ? `En ${weather.name} hay ${weather.main.temp}°C con ${weather.weather?.[0]?.description || "cielo variable"}.`
-        : `⚠️ No pude obtener el clima de "${city}".`;
+      let climaMsg;
+       if (weather?.main) {
+      const timezoneOffset = weather.timezone || 0;
+      const utcNow = new Date();
+      const localTime = new Date(utcNow.getTime() + timezoneOffset * 1000);
+      const horaLocal = localTime.toLocaleTimeString("es-AR", {
+      hour: "2-digit",
+      minute: "2-digit"
+       });
+      climaMsg = `En ${weather.name} hay ${weather.main.temp}°C con ${weather.weather?.[0]?.description || "cielo variable"}. Hora local: ${horaLocal}.`;
+      } else {
+  climaMsg = `⚠️ No pude obtener el clima de "${city}".`;
+      }
 
       const ai = await openai.chat.completions.create({
         model: "gpt-4o-mini",
