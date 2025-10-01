@@ -309,6 +309,17 @@ io.on('connection', (socket) => {
       const response = await conversationEngine.processMessage(socket.id, data.message);
       socket.emit('message_response', response);
 
+      // dividir en trozos de 1000–1200 caracteres
+const parts = [];
+for (let i = 0; i < reply.length; i += 1000) {
+  parts.push(reply.slice(i, i + 1000));
+}
+
+// mandar cada parte al cliente web
+parts.forEach(part => {
+  socket.emit('message_response', { message: part, timestamp: new Date() });
+});
+
     } catch (error) {
       console.error("Error en procesamiento (web):", error.message);
       socket.emit('error', { message: 'Error procesando el mensaje' });
