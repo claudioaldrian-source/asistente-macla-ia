@@ -395,6 +395,34 @@ app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), async (re
   const from = req.body.From || "wa-user";
   const numMedia = parseInt(req.body.NumMedia || "0", 10);
 
+  // --- Detectar y guardar nombre del usuario ---
+let nombre = db.users[from]?.prefs?.name || null;
+
+// Regex para capturar frases como "me llamo X", "soy X", "mi nombre es X"
+const match = userMessage.match(/\b(me llamo|soy|mi nombre es)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ]+)\b/i);
+if (match) {
+  nombre = match[2].trim();
+
+  // Diccionario simple de apodos comunes
+  const apodos = {
+    "claudio": "Clau",
+    "roberto": "Robert",
+    "isabel": "Isa",
+    "martina": "Martu",
+    "alejandro": "Ale",
+    "fernando": "Fer"
+  };
+
+  // Guardar en prefs
+  db.users[from] = db.users[from] || { prefs: {} };
+  db.users[from].prefs.name = nombre;
+  db.users[from].prefs.nickname = apodos[nombre.toLowerCase()] || nombre;
+  saveDB();
+
+  twiml.message(`¡Encantado, ${db.users[from].prefs.nickname}! Voy a recordarlo.`);
+  return res.type("text/xml").send(twiml.toString());
+}
+  
   // Si viene audio, lo bajo y lo transcribo
   if (numMedia > 0) {
     const mediaUrl = req.body.MediaUrl0;
@@ -511,12 +539,17 @@ app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), async (re
     }
   }
 
-  // Conversación normal + (OPCIONAL) adjuntar audio TTS en WA
+// --- Construir prompt tomando en cuenta si ya tiene nombre guardado ---
+const systemMsg = nombre
+  ? `Sos un asistente argentino, amable y natural. El usuario se llama ${nombre}, pero podés tratarlo con confianza como "${db.users[from].prefs.nickname}".`
+  : "Sos un asistente argentino, amable y natural.";
+
+  // Conversación normal con OpenAI
   try {
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "Sos un asistente argentino, amable y natural." },
+        { role: "system", content: systemMsg },
         { role: "user", content: userMessage }
       ],
       max_tokens: 800,   // le subimos el límite para recetas largas
