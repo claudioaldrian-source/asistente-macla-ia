@@ -115,6 +115,9 @@ function scheduleReminder(eventId, eventSummary, startISO, minutesBefore, target
 
   setTimeout(() => {
     const msg = `⏰ Recordatorio: ${eventSummary} en ${minutesBefore} minutos.`;
+    
+    
+
     // Websocket
     if (typeof targetSocketOrFrom === "object" && targetSocketOrFrom.emit) {
       targetSocketOrFrom.emit("reminder:fire", { eventId, text: msg });
@@ -124,6 +127,7 @@ function scheduleReminder(eventId, eventSummary, startISO, minutesBefore, target
       const MessagingResponse = twilio.twiml.MessagingResponse;
       const twiml = new MessagingResponse();
       twiml.message(msg);
+      
       // Podrías enviar con twilioClient.messages.create() si preferís push inmediato
       console.log(`Recordatorio WA → ${targetSocketOrFrom}: ${msg}`);
     }
@@ -149,7 +153,7 @@ class ConversationEngine {
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: conversation.messages,
-      max_tokens: 250,
+      max_tokens: 900,
       temperature: 0.9
     });
 
@@ -275,8 +279,8 @@ io.on('connection', (socket) => {
             attendeesEmails: intent.attendees || []
           });
           
-          // Programar recordatorio 60 minutos antes
-          scheduleReminder(event.id, event.summary, intent.startISO, 60, socket);
+// Programar recordatorio 60 minutos antes
+  scheduleReminder(event.id, event.summary, intent.startISO, 60, socket);
 
           socket.emit('message_response', {
             message: `✅ Listo, agendé **${event.summary}** para el ${new Date(event.start.dateTime || event.start.date).toLocaleString()}.`,
@@ -312,13 +316,14 @@ io.on('connection', (socket) => {
 
         let city = extraction.choices[0].message.content.trim();
         if (city.toLowerCase() === "ninguna" || !city) {
-  city = db.users[id]?.prefs?.city || data.message;
+  // usar lo último guardado o, si no hay, lo que escribió el usuario
+          city = db.users[id]?.prefs?.city || data.message;
 } else {
+  // guardar nueva ciudad preferida
   db.users[id] = db.users[id] || { prefs: {} };
   db.users[id].prefs.city = city;
   saveDB();
 }
-
 
         const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric&lang=es`;
         const r = await fetch(url);
@@ -344,7 +349,7 @@ io.on('connection', (socket) => {
             { role: "system", content: "Sos un asistente natural, cercano y argentino. Si hay datos de clima, integralos en la respuesta de manera natural." },
             { role: "user", content: `Mensaje del usuario: "${data.message}". Datos de clima: "${climaMsg}".` }
           ],
-          max_tokens: 250,
+          max_tokens: 900,
           temperature: 0.9
         });
 
@@ -353,20 +358,18 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // 3) Conversación normal
-      const response = await conversationEngine.processMessage(socket.id, data.message);
+     // 3) Conversación normal
+const response = await conversationEngine.processMessage(socket.id, data.message);
 const reply = response.message;
 
-// dividir en trozos de 1000–1200 caracteres
-const parts = [];
-for (let i = 0; i < reply.length; i += 1000) {
-  parts.push(reply.slice(i, i + 1000));
-}
+// partir en trozos de ~1000 chars, respetando párrafos/líneas
+const parts = splitForWeb(reply, 1000);
 
-// mandar cada parte al cliente web
+// enviar cada parte como burbuja separada
 parts.forEach(part => {
   socket.emit('message_response', { message: part, timestamp: new Date() });
 });
+return;
 
       } catch (error) {
       console.error("Error en procesamiento (web):", error.message);
@@ -432,6 +435,54 @@ function splitForWhatsApp(text, maxLen = 1200) {
   }
   if (chunk) parts.push(chunk);
   return parts;
+}
+
+// --- Web helpers ---
+function splitForWeb(text, maxLen = 1000) {
+  const t = String(text || "");
+  if (t.length <= maxLen) return [t];
+
+  const out = [];
+  const paras = t.split(/\n{2,}/); // cortar por párrafos
+
+  let buf = "";
+  const pushBuf = () => { if (buf) { out.push(buf.trim()); buf = ""; } };
+
+  for (const p of paras) {
+    if ((buf + "\n\n" + p).length <= maxLen) {
+      buf = buf ? `${buf}\n\n${p}` : p;
+      continue;
+    }
+    pushBuf();
+
+    if (p.length <= maxLen) {
+      out.push(p.trim());
+      continue;
+    }
+
+    const lines = p.split(/\n/);
+    let lb = "";
+    for (const line of lines) {
+      if ((lb + "\n" + line).length <= maxLen) {
+        lb = lb ? `${lb}\n${line}` : line;
+      } else {
+        if (lb) out.push(lb.trim());
+        lb = line;
+      }
+    }
+    if (lb) out.push(lb.trim());
+
+    // si algún bloque aún es largo, cortarlo a lo bruto
+    for (let i = out.length - 1; i >= 0; i--) {
+      const chunk = out[i];
+      if (chunk.length > maxLen) {
+        out.splice(i, 1, ...chunk.match(new RegExp(`.{1,${maxLen}}`, "g")));
+      }
+    }
+  }
+
+  if (buf) out.push(buf.trim());
+  return out;
 }
 
 // --- Webhook WhatsApp (texto + audios + clima + calendar) ---
