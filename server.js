@@ -279,14 +279,22 @@ io.on('connection', (socket) => {
             attendeesEmails: intent.attendees || []
           });
           
+          
 // Programar recordatorio 60 minutos antes
   scheduleReminder(event.id, event.summary, intent.startISO, 60, socket);
 
-          socket.emit('message_response', {
-            message: `✅ Listo, agendé **${event.summary}** para el ${new Date(event.start.dateTime || event.start.date).toLocaleString()}.`,
-            timestamp: new Date()
-          });
-          return;
+  socket.emit('message_response', {
+  message: `✅ Listo, agendé **${event.summary}** para el ${new Date(event.start.dateTime || event.start.date).toLocaleString("es-AR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  })}.`,
+  timestamp: new Date()
+});
+
+return;
         } catch (e) {
           console.error("Calendar error (web):", e.message);
           socket.emit('message_response', { message: "⚠️ No pude crear el evento. Probá con fecha y hora claras (ej: 'jueves 10:00').", timestamp: new Date() });
