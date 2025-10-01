@@ -513,6 +513,17 @@ setInterval(() => {
   if (due.length) saveDB();
 }, 5000);
 
+// --- Helper: generar digest diario ---
+async function getDayDigestForUser(id) {
+  // Podés mejorar esto después con tareas, clima, etc.
+  const reminders = db.reminders.filter(r => r.identity === id && !r.done);
+  if (!reminders.length) {
+    return "📋 No tenés tareas pendientes para hoy.";
+  }
+  const lista = reminders.map(r => `• ${r.text} (${new Date(r.dueAt).toLocaleString("es-AR")})`).join("\n");
+  return `📋 Tareas de hoy:\n${lista}`;
+}
+
 // --- CRON: Enviar resumen diario 06:30 ---
 const cron = require("node-cron");
 
