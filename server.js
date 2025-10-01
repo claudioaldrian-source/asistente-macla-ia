@@ -316,17 +316,38 @@ io.on('connection', (socket) => {
 
         let city = extraction.choices[0].message.content.trim();
         
-        if (city.toLowerCase() === "ninguna" || !city) {
-  // usar lo último que guardó este usuario de la web, o el texto que mandó
-  city = db.users[id]?.prefs?.city || data.message;
+        let url;
+let useLatLon = false;
+
+// detectar si pidió clima local (ej. "mi ciudad", "aca", "aquí")
+const wantsLocal = /\b(mi ciudad|mi zona|aca|aquí|aqui|donde estoy|cerca)\b/.test(textLower);
+
+if (wantsLocal && db.users[id]?.prefs?.location) {
+  // si tenemos coordenadas del navegador, usar lat/lon
+  const { lat, lon } = db.users[id].prefs.location;
+  url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric&lang=es`;
+  useLatLon = true;
 } else {
-  // guardar nueva ciudad como preferida para este usuario
+  // si no detectó ciudad, usar la última guardada
+  if (city.toLowerCase() === "ninguna" || !city) {
+    if (db.users[id]?.prefs?.city) {
+      city = db.users[id].prefs.city;
+    } else {
+      socket.emit('message_response', {
+        message: "Decime tu ciudad (ej. 'Santa Fe, AR') o autorizá ubicación del navegador para darte el clima local.",
+        timestamp: new Date()
+      });
+      return;
+    }
+  }
+  // guardar la ciudad como preferida
   db.users[id] = db.users[id] || { prefs: {} };
   db.users[id].prefs.city = city;
   saveDB();
+
+  url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric&lang=es`;
 }
 
-        const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric&lang=es`;
         const r = await fetch(url);
         const weather = await r.json();
 
@@ -341,7 +362,7 @@ io.on('connection', (socket) => {
          });
          climaMsg = `En ${weather.name} hay ${weather.main.temp}°C con ${weather.weather?.[0]?.description || "cielo variable"}. Hora local: ${horaLocal}.`;
         } else {
-        climaMsg = `⚠️ No pude obtener el clima de "${city}".`;
+        climaMsg = `⚠️ No pude obtener el clima de ${useLatLon ? "tu ubicación" : `"${city}"`}.`;
         }
 
         const response = await openai.chat.completions.create({
@@ -385,6 +406,13 @@ return;
      if (!db.users[socket.data.identity]) db.users[socket.data.identity] = { prefs: {} };
      saveDB();
      });
+
+     socket.on("geo:update", ({ lat, lon }) => {
+  const id = socket.data.identity || `anon-${socket.id}`;
+  db.users[id] = db.users[id] || { prefs: {} };
+  db.users[id].prefs.location = { lat, lon };
+  saveDB();
+});
 
     socket.on('memory:update', (prefs) => {
     const id = socket.data.identity || `anon-${socket.id}`;

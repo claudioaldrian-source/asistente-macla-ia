@@ -15,6 +15,24 @@
     }
   </style>
 </head>
+<script>
+  // Enviá lat/lon al server cuando el navegador lo permita
+  if ("geolocation" in navigator) {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        // asume que ya tenés const socket = io();
+        socket.emit("geo:update", { lat, lon });
+      },
+      (err) => {
+        console.warn("No se pudo obtener ubicación del navegador:", err.message);
+      },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+    );
+  }
+</script>
+
 <body class="bg-gradient-to-br from-blue-50 to-indigo-100 h-screen flex flex-col">
   <div class="p-4 bg-white shadow flex items-center">
     <h1 class="text-xl font-bold text-gray-800">🎙️ Asistente Conversacional</h1>
