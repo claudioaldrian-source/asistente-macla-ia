@@ -10,6 +10,9 @@ const twilio = require('twilio');
 const { v4: uuidv4 } = require('uuid');
 const { google } = require('googleapis');
 const axios = require('axios');
+const cron = require('node-cron'); // AGREGAR
+// (opcional si querés WhatsApp push más adelante)
+// const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
 // --- Polyfill de fetch (por si el runtime no lo trae) ---
 if (typeof fetch === 'undefined') {
@@ -113,12 +116,64 @@ function scheduleReminder(eventId, eventSummary, startISO, minutesBefore, target
     return;
   }
 
+// --- RESUMEN DEL DÍA (eventos + recordatorios locales) ---
+async function getDayDigestForUser(identity) {
+  const auth = getOAuth2Client();
+  const calendar = google.calendar({ version: "v3", auth });
+
+  // Ventana: desde ahora hasta +24h
+  const now = new Date();
+  const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
+  let eventsText = "• (Sin eventos en Google Calendar)";
+  try {
+    const calendarId = process.env.GOOGLE_CALENDAR_ID || "primary";
+    const ev = await calendar.events.list({
+      calendarId,
+      timeMin: now.toISOString(),
+      timeMax: in24h.toISOString(),
+      singleEvents: true,
+      orderBy: "startTime",
+    });
+    const items = ev.data.items || [];
+    if (items.length) {
+      eventsText = items.map(e => {
+        const startISO = e.start?.dateTime || e.start?.date || e.start;
+        const when = startISO ? new Date(startISO).toLocaleString("es-AR", {
+          day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
+        }) : "(sin hora)";
+        return `• ${when} — ${e.summary || "(Sin título)"}`;
+      }).join("\n");
+    }
+  } catch (e) {
+    eventsText = "• (No se pudo leer Calendar)";
+    console.error("Digest Calendar error:", e.message);
+  }
+
+  const userRems = (db.reminders || [])
+    .filter(r => r.identity === identity && !r.done && r.dueAt && r.dueAt <= in24h.getTime());
+  const remText = userRems.length
+    ? userRems.map(r => {
+        const when = new Date(r.dueAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
+        return `• ${when} — ${r.text}`;
+      }).join("\n")
+    : "• (Sin recordatorios locales)";
+
+  return (
+`📋 *Resumen del día*
+
+🗓️ *Eventos (próximas 24h)*:
+${eventsText}
+
+⏰ *Recordatorios locales*:
+${remText}`
+  );
+}
+
   setTimeout(() => {
     const msg = `⏰ Recordatorio: ${eventSummary} en ${minutesBefore} minutos.`;
     
-    
-
-    // Websocket
+        // Websocket
     if (typeof targetSocketOrFrom === "object" && targetSocketOrFrom.emit) {
       targetSocketOrFrom.emit("reminder:fire", { eventId, text: msg });
     }
@@ -457,6 +512,22 @@ setInterval(() => {
   });
   if (due.length) saveDB();
 }, 5000);
+
+// --- CRON: Enviar resumen diario 06:30 ---
+const cron = require("node-cron");
+
+cron.schedule("30 6 * * *", async () => {
+  console.log("⏰ Ejecutando resumen diario (06:30)...");
+  for (const id of Object.keys(db.users)) {
+    const digest = await getDayDigestForUser(id);
+
+    // Enviar al cliente web conectado
+    const target = [...io.sockets.sockets.values()].find(s => s.data?.identity === id);
+    if (target) {
+      target.emit("message_response", { message: digest, timestamp: new Date() });
+    }
+  }
+});
 
 // --- WhatsApp helpers ---
 function splitForWhatsApp(text, maxLen = 1200) {
