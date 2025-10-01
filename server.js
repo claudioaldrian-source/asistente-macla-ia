@@ -312,14 +312,13 @@ io.on('connection', (socket) => {
 
         let city = extraction.choices[0].message.content.trim();
         if (city.toLowerCase() === "ninguna" || !city) {
-       // usar lo último que guardó, si no hay, probar con lo que escribió el usuario
-       city = db.users[from]?.prefs?.city || userMessage;
-        } else {
-      // guardar nueva ciudad como preferida
-      db.users[from] = db.users[from] || { prefs: {} };
-       db.users[from].prefs.city = city;
-        saveDB();
-        }
+  city = db.users[id]?.prefs?.city || data.message;
+} else {
+  db.users[id] = db.users[id] || { prefs: {} };
+  db.users[id].prefs.city = city;
+  saveDB();
+}
+
 
         const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric&lang=es`;
         const r = await fetch(url);
@@ -356,18 +355,18 @@ io.on('connection', (socket) => {
 
       // 3) Conversación normal
       const response = await conversationEngine.processMessage(socket.id, data.message);
-      socket.emit('message_response', response);
+const reply = response.message;
 
-      // dividir en trozos de 1000–1200 caracteres
-      const parts = [];
-      for (let i = 0; i < reply.length; i += 1000) {
-       parts.push(reply.slice(i, i + 1000));
-      }
+// dividir en trozos de 1000–1200 caracteres
+const parts = [];
+for (let i = 0; i < reply.length; i += 1000) {
+  parts.push(reply.slice(i, i + 1000));
+}
 
-      // mandar cada parte al cliente web
-      parts.forEach(part => {
-      socket.emit('message_response', { message: part, timestamp: new Date() });
-      });
+// mandar cada parte al cliente web
+parts.forEach(part => {
+  socket.emit('message_response', { message: part, timestamp: new Date() });
+});
 
       } catch (error) {
       console.error("Error en procesamiento (web):", error.message);
