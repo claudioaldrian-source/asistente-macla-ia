@@ -311,11 +311,14 @@ io.on('connection', (socket) => {
         });
 
         let city = extraction.choices[0].message.content.trim();
-        if (city.toLowerCase() === "ninguna") {
-          city = db.users[id].prefs.city || "Avellaneda,AR";
+        if (city.toLowerCase() === "ninguna" || !city) {
+       // usar lo último que guardó, si no hay, probar con lo que escribió el usuario
+       city = db.users[from]?.prefs?.city || userMessage;
         } else {
-          db.users[id].prefs.city = city;
-          saveDB();
+      // guardar nueva ciudad como preferida
+      db.users[from] = db.users[from] || { prefs: {} };
+       db.users[from].prefs.city = city;
+        saveDB();
         }
 
         const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric&lang=es`;
@@ -555,13 +558,15 @@ if (match) {
       });
 
       let city = (extraction.choices?.[0]?.message?.content || "").trim();
-      if (city.toLowerCase() === "ninguna") {
-        city = (db.users[from]?.prefs?.city) || "Avellaneda,AR";
-      } else {
-        db.users[from] = db.users[from] || { prefs: {} };
-        db.users[from].prefs.city = city;
-        saveDB();
-      }
+      if (city.toLowerCase() === "ninguna" || !city) {
+  // usar lo último que guardó, si no hay, probar con lo que escribió el usuario
+  city = db.users[from]?.prefs?.city || userMessage;
+} else {
+  // guardar nueva ciudad como preferida
+  db.users[from] = db.users[from] || { prefs: {} };
+  db.users[from].prefs.city = city;
+  saveDB();
+}
 
       const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric&lang=es`;
       const r = await fetch(url);
