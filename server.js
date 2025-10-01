@@ -315,11 +315,12 @@ io.on('connection', (socket) => {
         });
 
         let city = extraction.choices[0].message.content.trim();
+        
         if (city.toLowerCase() === "ninguna" || !city) {
-  // usar lo último guardado o, si no hay, lo que escribió el usuario
-          city = db.users[id]?.prefs?.city || data.message;
+  // usar lo último que guardó este usuario de la web, o el texto que mandó
+  city = db.users[id]?.prefs?.city || data.message;
 } else {
-  // guardar nueva ciudad preferida
+  // guardar nueva ciudad como preferida para este usuario
   db.users[id] = db.users[id] || { prefs: {} };
   db.users[id].prefs.city = city;
   saveDB();
