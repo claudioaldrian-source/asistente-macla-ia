@@ -508,8 +508,10 @@ app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), async (re
         { role: "system", content: "Sos un asistente argentino, amable y natural." },
         { role: "user", content: userMessage }
       ],
-      max_tokens: 180
+      max_tokens: 800,   // le subimos el límite para recetas largas
+    temperature: 0.9
     });
+
     const reply = aiResponse.choices[0].message.content;
 
     // Enviar en partes si es largo
@@ -535,7 +537,9 @@ app.post("/webhook/whatsapp", express.urlencoded({ extended: false }), async (re
       console.warn("No se pudo adjuntar audio TTS en WA:", e.message);
     }
 
-    res.type("text/xml").send(twiml.toString());
+    // 👉 Enviar la respuesta completa a Twilio
+    return res.type("text/xml").send(twiml.toString()); 
+    
   } catch (error) {
     console.error("❌ Error en WhatsApp webhook:", error.message);
     twiml.message("⚠️ Lo siento, tuve un problema procesando tu mensaje.");
